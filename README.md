@@ -34,7 +34,7 @@ Perfect for developers managing multiple OpenAI accounts, client environments, w
 ### One-Line Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<username>/rcodex/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sc-starman/rcodex/main/install.sh | bash
 ```
 
 ---
