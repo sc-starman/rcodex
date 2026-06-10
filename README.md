@@ -21,6 +21,12 @@ profile and automatically routes you to whichever account currently has the
 most headroom. When one account gets close to its limit, `rcodex` quietly
 starts steering you to the next-best one — no manual account juggling.
 
+Codex sessions are stored per-profile, so switching profiles normally means
+losing access to your most recent conversation. `rcodex` works around this:
+whenever it launches a different profile than last time, it carries over the
+most recent session for your current directory so `codex resume` can pick up
+where you left off.
+
 ---
 
 ## Features
@@ -28,6 +34,7 @@ starts steering you to the next-best one — no manual account juggling.
 * Multiple Codex profiles
 * Complete profile isolation
 * **Smart routing to the best-available profile** based on live rate limits
+* **Session carry-over** so `codex resume` keeps working across profile switches
 * Simple Unix-style CLI
 * No external dependencies
 * Pure Bash implementation
@@ -341,6 +348,27 @@ This ensures complete separation between:
 * Local State
 
 No profile can affect another profile.
+
+---
+
+## Session Carry-Over
+
+Codex stores session history under `$CODEX_HOME/sessions/`, so each profile
+normally has its own, separate session history. If `rcodex` routes you to a
+different profile than last time (e.g. your previous profile hit its rate
+limit), `codex resume` would otherwise show no record of your last
+conversation.
+
+To avoid this, every time `rcodex` launches a profile it checks which
+profile was used last (tracked in `~/.rcodex/.last_profile`). If it differs
+from the one being launched now, `rcodex` looks for the most recent session
+in the old profile whose working directory matches your current directory,
+and copies that session's file into the new profile's session store. This
+is a one-time copy (it won't overwrite or duplicate on later launches), and
+each profile's session history otherwise remains fully independent.
+
+After the copy, `codex resume` / `codex resume --last` under the new profile
+will see and can continue that session.
 
 ---
 

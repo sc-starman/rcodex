@@ -233,6 +233,62 @@ pick_best_profile() {
     echo "$best"
 }
 
+# If the profile being switched to (TO) differs from the one that last ran
+# (FROM), copies the most recent session for the current directory from
+# FROM's session store into TO's, so `codex resume` can find it there.
+carry_over_session() {
+    local from="$1" to="$2"
+    local from_dir to_dir file rel dest
+
+    if [ "$from" = "$to" ]; then
+        return 0
+    fi
+
+    from_dir="$(profile_dir "$from")/sessions"
+    to_dir="$(profile_dir "$to")/sessions"
+
+    if [ ! -d "$from_dir" ]; then
+        return 0
+    fi
+
+    while IFS= read -r file; do
+        if ! grep -qF "\"cwd\":\"$PWD\"" "$file" 2>/dev/null; then
+            continue
+        fi
+
+        rel="${file#"$from_dir"/}"
+        dest="$to_dir/$rel"
+
+        if [ -e "$dest" ]; then
+            return 0
+        fi
+
+        mkdir -p "$(dirname "$dest")"
+        cp -p "$file" "$dest"
+        echo "Carried over session for $PWD from '$from' to '$to'." >&2
+        return 0
+    done < <(find "$from_dir" -name 'rollout-*.jsonl' 2>/dev/null | sort -r)
+}
+
+# Records PROFILE as the profile used for this launch. If a different
+# profile was used last time, carries over its most recent session for the
+# current directory first.
+track_profile_and_carry_over() {
+    local profile="$1"
+    local last_file="$BASE_DIR/.last_profile"
+    local last=""
+
+    if [ -f "$last_file" ]; then
+        last="$(cat "$last_file")"
+    fi
+
+    if [ -n "$last" ] && [ "$last" != "$profile" ]; then
+        carry_over_session "$last" "$profile"
+    fi
+
+    echo "$profile" > "$last_file"
+}
+
 if [ $# -lt 1 ]; then
     set -- "$RESERVED_PROFILE"
 fi
@@ -261,6 +317,7 @@ case "$1" in
             PROFILE="$(pick_best_profile)" || exit 1
             echo "Using profile: $PROFILE" >&2
             shift 2
+            track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$(profile_dir "$PROFILE")"
             exec codex exec "$@"
         fi
@@ -269,6 +326,7 @@ case "$1" in
 
         if [ -d "$DIR" ]; then
             shift 2
+            track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$DIR"
             exec codex exec "$@"
         fi
@@ -280,6 +338,7 @@ case "$1" in
 
         if BEST_PROFILE="$(pick_best_profile)"; then
             echo "Using profile: $BEST_PROFILE" >&2
+            track_profile_and_carry_over "$BEST_PROFILE"
             export CODEX_HOME="$(profile_dir "$BEST_PROFILE")"
         fi
 
@@ -429,6 +488,7 @@ case "$1" in
             PROFILE="$(pick_best_profile)" || exit 1
             echo "Using profile: $PROFILE" >&2
             shift
+            track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$(profile_dir "$PROFILE")"
             exec codex "$@"
         fi
@@ -437,6 +497,7 @@ case "$1" in
 
         if [ -d "$DIR" ]; then
             shift
+            track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$DIR"
             exec codex "$@"
         fi
@@ -447,6 +508,7 @@ case "$1" in
         # rate-limit headroom.
         if BEST_PROFILE="$(pick_best_profile)"; then
             echo "Using profile: $BEST_PROFILE" >&2
+            track_profile_and_carry_over "$BEST_PROFILE"
             export CODEX_HOME="$(profile_dir "$BEST_PROFILE")"
         fi
 
