@@ -117,6 +117,22 @@ rcodex personal
 
 ---
 
+### Run a Non-Interactive Command
+
+Run `codex exec` using a profile.
+
+```bash
+rcodex exec <profile> [args...]
+```
+
+Example:
+
+```bash
+rcodex exec work "fix the failing tests"
+```
+
+---
+
 ### List Profiles
 
 ```bash
