@@ -5,7 +5,7 @@ set -e
 mkdir -p "$HOME/bin"
 
 curl -fsSL \
-https://raw.githubusercontent.com/<username>/rcodex/main/rcodex \
+https://raw.githubusercontent.com/sc-starman/rcodex/main/rcodex \
 -o "$HOME/bin/rcodex"
 
 chmod +x "$HOME/bin/rcodex"
