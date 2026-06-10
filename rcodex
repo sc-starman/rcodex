@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+BASE_DIR="$HOME/.rcodex"
+
+mkdir -p "$BASE_DIR"
+
+usage() {
+    cat <<EOF
+Usage:
+
+  rcodex login <profile>
+      Create/login a profile
+
+  rcodex <profile>
+      Launch codex using profile
+
+  rcodex list
+      List profiles
+
+  rcodex status <profile>
+      Show profile information
+
+  rcodex remove <profile>
+      Delete profile
+
+  rcodex rename <old> <new>
+      Rename profile
+
+EOF
+    exit 1
+}
+
+profile_dir() {
+    echo "$BASE_DIR/$1"
+}
+
+if [ $# -lt 1 ]; then
+    usage
+fi
+
+case "$1" in
+
+    login)
+        [ $# -eq 2 ] || usage
+
+        PROFILE="$2"
+        DIR="$(profile_dir "$PROFILE")"
+
+        mkdir -p "$DIR"
+
+        echo "Logging into profile: $PROFILE"
+        CODEX_HOME="$DIR" codex login
+        ;;
+
+    list)
+        echo "Profiles:"
+        echo
+
+        FOUND=0
+
+        for dir in "$BASE_DIR"/*; do
+            [ -d "$dir" ] || continue
+
+            FOUND=1
+
+            PROFILE="$(basename "$dir")"
+
+            if [ -f "$dir/auth.json" ]; then
+                echo "  ✓ $PROFILE"
+            else
+                echo "  ? $PROFILE (not logged in)"
+            fi
+        done
+
+        [ $FOUND -eq 1 ] || echo "  No profiles found."
+        ;;
+
+    status)
+        [ $# -eq 2 ] || usage
+
+        PROFILE="$2"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile not found."
+            exit 1
+        }
+
+        echo "Profile : $PROFILE"
+        echo "Path    : $DIR"
+
+        if [ -f "$DIR/auth.json" ]; then
+            echo "Login   : Yes"
+        else
+            echo "Login   : No"
+        fi
+
+        echo
+        du -sh "$DIR" 2>/dev/null || true
+        ;;
+
+    remove)
+        [ $# -eq 2 ] || usage
+
+        PROFILE="$2"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile not found."
+            exit 1
+        }
+
+        read -rp "Delete profile '$PROFILE'? [y/N] " ANSWER
+
+        case "$ANSWER" in
+            y|Y|yes|YES)
+                rm -rf "$DIR"
+                echo "Removed."
+                ;;
+            *)
+                echo "Cancelled."
+                ;;
+        esac
+        ;;
+
+    rename)
+        [ $# -eq 3 ] || usage
+
+        OLD="$2"
+        NEW="$3"
+
+        OLD_DIR="$(profile_dir "$OLD")"
+        NEW_DIR="$(profile_dir "$NEW")"
+
+        [ -d "$OLD_DIR" ] || {
+            echo "Source profile not found."
+            exit 1
+        }
+
+        [ ! -e "$NEW_DIR" ] || {
+            echo "Target profile already exists."
+            exit 1
+        }
+
+        mv "$OLD_DIR" "$NEW_DIR"
+
+        echo "Renamed '$OLD' -> '$NEW'"
+        ;;
+
+    *)
+        PROFILE="$1"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile '$PROFILE' does not exist."
+            echo
+            echo "Create it first:"
+            echo "  rcodex login $PROFILE"
+            exit 1
+        }
+
+        export CODEX_HOME="$DIR"
+
+        exec codex
+        ;;
+esac
