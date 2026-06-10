@@ -1,6 +1,6 @@
 # rcodex
 
-Lightweight multi-profile manager for OpenAI Codex CLI.
+Lightweight multi-profile manager **and smart router** for OpenAI Codex CLI.
 
 `rcodex` allows you to maintain multiple isolated Codex environments on a single machine without logging in and out repeatedly.
 
@@ -15,17 +15,25 @@ Each profile gets its own:
 
 Perfect for developers managing multiple OpenAI accounts, client environments, work/personal setups, or separate AI agents.
 
+On top of profile management, `rcodex` acts as a **router**: run it with no
+arguments and it checks the live Codex rate limits of every logged-in
+profile and automatically routes you to whichever account currently has the
+most headroom. When one account gets close to its limit, `rcodex` quietly
+starts steering you to the next-best one — no manual account juggling.
+
 ---
 
 ## Features
 
 * Multiple Codex profiles
 * Complete profile isolation
+* **Smart routing to the best-available profile** based on live rate limits
 * Simple Unix-style CLI
 * No external dependencies
 * Pure Bash implementation
 * Safe account separation
 * Supports running multiple Codex instances simultaneously
+* Per-profile rate-limit caching for fast, repeated invocations
 
 ---
 
@@ -85,6 +93,36 @@ rcodex client1
 
 ## Commands
 
+### Launch the Best Profile
+
+Run with no arguments (or `best`) to automatically launch whichever
+logged-in profile currently has the most rate-limit headroom:
+
+```bash
+rcodex
+```
+
+This is equivalent to:
+
+```bash
+rcodex best
+```
+
+`rcodex` checks each profile's 5-hour and weekly Codex rate limits (via
+`codex app-server`) and picks the one with the most remaining headroom on
+its most-constrained window. Results are cached per-profile for
+`RCODEX_RATE_LIMIT_CACHE_TTL` seconds (default `120`) so repeated
+invocations are instant.
+
+`best` can also be used in place of a profile name elsewhere:
+
+```bash
+rcodex exec best "fix the failing tests"
+rcodex status best
+```
+
+---
+
 ### Login
 
 Create or login to a profile.
@@ -130,6 +168,34 @@ Example:
 ```bash
 rcodex exec work "fix the failing tests"
 ```
+
+---
+
+### Rate Limit / Usage Status
+
+Show the 5-hour and weekly Codex rate-limit usage for every profile:
+
+```bash
+rcodex limits
+```
+
+Example output:
+
+```text
+PROFILE            5H USED    5H LEFT  WEEK USED  WEEK LEFT
+personal                1%        99%         0%       100%
+work                   42%        58%        10%        90%
+client1         (not logged in)
+```
+
+Cached values up to `RCODEX_RATE_LIMIT_CACHE_TTL` seconds old (default
+`120`) may be shown. Pass `--refresh` to force a live check:
+
+```bash
+rcodex limits --refresh
+```
+
+This is the same data `rcodex` / `rcodex best` use to pick a profile.
 
 ---
 
@@ -342,6 +408,18 @@ Launch work profile:
 rcodex work
 ```
 
+Let `rcodex` pick whichever profile has the most rate-limit headroom:
+
+```bash
+rcodex
+```
+
+Check rate-limit usage across all profiles:
+
+```bash
+rcodex limits
+```
+
 Check profile information:
 
 ```bash
@@ -376,6 +454,13 @@ Codex CLI currently stores all state in a single `CODEX_HOME` directory.
 
 without requiring logouts, file copying, or manual environment management.
 
+On top of that, `rcodex` doubles as a **best-effort router** across your
+accounts. Codex usage limits reset on rolling 5-hour and weekly windows —
+if you juggle several accounts (e.g. multiple Plus/Pro plans), `rcodex`
+saves you from manually checking `/status` in each one and switching by
+hand. Just run `rcodex`, and it routes you to whichever profile has the
+most rate-limit headroom right now.
+
 ---
 
 ## License
@@ -388,7 +473,7 @@ Feel free to use, modify, and distribute.
 
 ## Repository Description
 
-Lightweight multi-profile manager for OpenAI Codex CLI. Run multiple Codex accounts and isolated environments from a single machine.
+Lightweight multi-profile manager and smart router for OpenAI Codex CLI. Run multiple Codex accounts and isolated environments from a single machine, and auto-route to whichever account has the most rate-limit headroom.
 
 ---
 
@@ -406,4 +491,6 @@ mcp
 openai-codex
 terminal
 linux
+rate-limiting
+router
 ```

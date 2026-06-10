@@ -3,6 +3,8 @@
 set -euo pipefail
 
 BASE_DIR="$HOME/.rcodex"
+RESERVED_PROFILE="best"
+RATE_LIMIT_CACHE_TTL="${RCODEX_RATE_LIMIT_CACHE_TTL:-120}"
 
 mkdir -p "$BASE_DIR"
 
@@ -10,14 +12,26 @@ usage() {
     cat <<EOF
 Usage:
 
+  rcodex
+      Launch codex using the profile with the most rate-limit headroom
+
   rcodex login <profile>
       Create/login a profile
 
   rcodex <profile>
       Launch codex using profile
 
+  rcodex best
+      Same as running rcodex with no arguments
+
   rcodex exec <profile> [args...]
       Run 'codex exec' using profile
+
+  rcodex exec best [args...]
+      Run 'codex exec' using the profile with the most rate-limit headroom
+
+  rcodex limits [--refresh]
+      Show rate-limit usage for all profiles
 
   rcodex list
       List profiles
@@ -39,8 +53,188 @@ profile_dir() {
     echo "$BASE_DIR/$1"
 }
 
+check_not_reserved() {
+    if [ "$1" = "$RESERVED_PROFILE" ]; then
+        echo "'$RESERVED_PROFILE' is a reserved profile name." >&2
+        exit 1
+    fi
+}
+
+# Reads ~/.rcodex/<profile>/.rate_limit_cache into:
+#   fetched_at, primary_used, primary_resets_at, secondary_used, secondary_resets_at
+# Returns 1 if the file is missing or doesn't contain usable data.
+load_rate_limit_cache_any() {
+    local dir="$1"
+    local file="$dir/.rate_limit_cache"
+
+    [ -f "$file" ] || return 1
+
+    fetched_at= primary_used= primary_resets_at= secondary_used= secondary_resets_at=
+    # shellcheck source=/dev/null
+    source "$file"
+
+    [ -n "${primary_used:-}" ] && [ -n "${secondary_used:-}" ]
+}
+
+# Like load_rate_limit_cache_any, but only succeeds if the cache is still
+# within RATE_LIMIT_CACHE_TTL and the primary (5h) window hasn't reset yet.
+load_rate_limit_cache() {
+    local dir="$1"
+
+    load_rate_limit_cache_any "$dir" || return 1
+
+    [ -n "${fetched_at:-}" ] || return 1
+
+    local now_ts
+    now_ts="$(date +%s)"
+
+    (( now_ts - fetched_at < RATE_LIMIT_CACHE_TTL )) || return 1
+
+    if [ "${primary_resets_at:-0}" -gt 0 ] && (( now_ts >= primary_resets_at )); then
+        return 1
+    fi
+
+    return 0
+}
+
+# Talks to `codex app-server` over stdio (JSON-RPC) to read live rate limits
+# for a profile, and writes the result to its cache file. On success, sets
+# the same variables as load_rate_limit_cache_any.
+fetch_rate_limits() {
+    local dir="$1"
+
+    [ -f "$dir/auth.json" ] || return 1
+
+    coproc CODEXRL { CODEX_HOME="$dir" codex app-server 2>/dev/null; }
+
+    printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"rcodex","title":"rcodex","version":"1.0"}}}' \
+        >&"${CODEXRL[1]}" 2>/dev/null || true
+    printf '%s\n' '{"id":2,"method":"account/rateLimits/read","params":null}' \
+        >&"${CODEXRL[1]}" 2>/dev/null || true
+
+    local line response=""
+    while IFS= read -r -t 10 -u "${CODEXRL[0]}" line; do
+        case "$line" in
+            *'"id":2'*) response="$line"; break ;;
+        esac
+    done
+
+    eval "exec ${CODEXRL[1]}>&-" 2>/dev/null || true
+    eval "exec ${CODEXRL[0]}<&-" 2>/dev/null || true
+    kill "$CODEXRL_PID" 2>/dev/null || true
+    wait "$CODEXRL_PID" 2>/dev/null || true
+
+    [ -n "$response" ] || return 1
+
+    case "$response" in
+        *'"error"'*) return 1 ;;
+    esac
+
+    # The snapshot appears twice (once under `rateLimits`, once under
+    # `rateLimitsByLimitId`), so only take the first match of each.
+    local p_used p_resets s_used s_resets
+    p_used="$(grep -oP '"primary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    p_resets="$(grep -oP '"primary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    s_used="$(grep -oP '"secondary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    s_resets="$(grep -oP '"secondary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
+
+    [ -n "$p_used" ] && [ -n "$s_used" ] || return 1
+
+    fetched_at="$(date +%s)"
+    primary_used="$p_used"
+    primary_resets_at="${p_resets:-0}"
+    secondary_used="$s_used"
+    secondary_resets_at="${s_resets:-0}"
+
+    {
+        echo "fetched_at=$fetched_at"
+        echo "primary_used=$primary_used"
+        echo "primary_resets_at=$primary_resets_at"
+        echo "secondary_used=$secondary_used"
+        echo "secondary_resets_at=$secondary_resets_at"
+    } > "$dir/.rate_limit_cache"
+
+    return 0
+}
+
+# Sets primary_used/secondary_used/etc, preferring a fresh cache, falling
+# back to a live fetch, and finally to a stale cache if the fetch fails.
+# Pass "force" as $2 to skip the cache and always fetch live.
+get_rate_limits() {
+    local dir="$1" force="${2:-}"
+
+    if [ "$force" != "force" ] && load_rate_limit_cache "$dir"; then
+        return 0
+    fi
+
+    if fetch_rate_limits "$dir"; then
+        return 0
+    fi
+
+    load_rate_limit_cache_any "$dir"
+}
+
+# Echoes a 0-100 "remaining" score: the smaller of the 5h and weekly
+# remaining percentages (i.e. whichever window is more constraining).
+rate_limit_score() {
+    local dir="$1" force="${2:-}"
+
+    get_rate_limits "$dir" "$force" || return 1
+
+    local rem_primary=$((100 - primary_used))
+    local rem_secondary=$((100 - secondary_used))
+
+    if [ "$rem_primary" -lt "$rem_secondary" ]; then
+        echo "$rem_primary"
+    else
+        echo "$rem_secondary"
+    fi
+}
+
+# Echoes the name of the logged-in profile with the most rate-limit
+# headroom. Pass "force" as $1 to bypass cached rate limit data.
+pick_best_profile() {
+    local force="${1:-}"
+    local dir p
+    local profiles=()
+
+    for dir in "$BASE_DIR"/*; do
+        [ -d "$dir" ] || continue
+        [ -f "$dir/auth.json" ] || continue
+        profiles+=("$(basename "$dir")")
+    done
+
+    if [ ${#profiles[@]} -eq 0 ]; then
+        echo "No logged-in profiles found." >&2
+        echo "Create one with: rcodex login <profile>" >&2
+        return 1
+    fi
+
+    if [ ${#profiles[@]} -eq 1 ]; then
+        echo "${profiles[0]}"
+        return 0
+    fi
+
+    local best="" best_score=-1 score
+    for p in "${profiles[@]}"; do
+        if score="$(rate_limit_score "$(profile_dir "$p")" "$force")"; then
+            if [ "$score" -gt "$best_score" ]; then
+                best_score="$score"
+                best="$p"
+            fi
+        fi
+    done
+
+    if [ -z "$best" ]; then
+        echo "Warning: could not read rate limits for any profile; using '${profiles[0]}'." >&2
+        best="${profiles[0]}"
+    fi
+
+    echo "$best"
+}
+
 if [ $# -lt 1 ]; then
-    usage
+    set -- "$RESERVED_PROFILE"
 fi
 
 case "$1" in
@@ -49,6 +243,7 @@ case "$1" in
         [ $# -eq 2 ] || usage
 
         PROFILE="$2"
+        check_not_reserved "$PROFILE"
         DIR="$(profile_dir "$PROFILE")"
 
         mkdir -p "$DIR"
@@ -61,6 +256,12 @@ case "$1" in
         [ $# -ge 2 ] || usage
 
         PROFILE="$2"
+
+        if [ "$PROFILE" = "$RESERVED_PROFILE" ]; then
+            PROFILE="$(pick_best_profile)" || exit 1
+            echo "Using profile: $PROFILE" >&2
+        fi
+
         DIR="$(profile_dir "$PROFILE")"
 
         [ -d "$DIR" ] || {
@@ -101,10 +302,49 @@ case "$1" in
         [ $FOUND -eq 1 ] || echo "  No profiles found."
         ;;
 
+    limits)
+        FORCE=""
+        case "${2:-}" in
+            --refresh|-f) FORCE="force" ;;
+        esac
+
+        FOUND=0
+
+        printf "%-15s %10s %10s %10s %10s\n" "PROFILE" "5H USED" "5H LEFT" "WEEK USED" "WEEK LEFT"
+
+        for dir in "$BASE_DIR"/*; do
+            [ -d "$dir" ] || continue
+
+            FOUND=1
+            PROFILE="$(basename "$dir")"
+
+            if [ ! -f "$dir/auth.json" ]; then
+                printf "%-15s %s\n" "$PROFILE" "(not logged in)"
+                continue
+            fi
+
+            if get_rate_limits "$dir" "$FORCE"; then
+                printf "%-15s %9s%% %9s%% %9s%% %9s%%\n" \
+                    "$PROFILE" \
+                    "$primary_used" "$((100 - primary_used))" \
+                    "$secondary_used" "$((100 - secondary_used))"
+            else
+                printf "%-15s %s\n" "$PROFILE" "(unable to read rate limits)"
+            fi
+        done
+
+        [ $FOUND -eq 1 ] || echo "No profiles found."
+        ;;
+
     status)
         [ $# -eq 2 ] || usage
 
         PROFILE="$2"
+
+        if [ "$PROFILE" = "$RESERVED_PROFILE" ]; then
+            PROFILE="$(pick_best_profile)" || exit 1
+        fi
+
         DIR="$(profile_dir "$PROFILE")"
 
         [ -d "$DIR" ] || {
@@ -155,6 +395,8 @@ case "$1" in
         OLD="$2"
         NEW="$3"
 
+        check_not_reserved "$NEW"
+
         OLD_DIR="$(profile_dir "$OLD")"
         NEW_DIR="$(profile_dir "$NEW")"
 
@@ -175,6 +417,12 @@ case "$1" in
 
     *)
         PROFILE="$1"
+
+        if [ "$PROFILE" = "$RESERVED_PROFILE" ]; then
+            PROFILE="$(pick_best_profile)" || exit 1
+            echo "Using profile: $PROFILE" >&2
+        fi
+
         DIR="$(profile_dir "$PROFILE")"
 
         [ -d "$DIR" ] || {
