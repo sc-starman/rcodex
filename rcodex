@@ -260,21 +260,28 @@ case "$1" in
         if [ "$PROFILE" = "$RESERVED_PROFILE" ]; then
             PROFILE="$(pick_best_profile)" || exit 1
             echo "Using profile: $PROFILE" >&2
+            shift 2
+            export CODEX_HOME="$(profile_dir "$PROFILE")"
+            exec codex exec "$@"
         fi
 
         DIR="$(profile_dir "$PROFILE")"
 
-        [ -d "$DIR" ] || {
-            echo "Profile '$PROFILE' does not exist."
-            echo
-            echo "Create it first:"
-            echo "  rcodex login $PROFILE"
-            exit 1
-        }
+        if [ -d "$DIR" ]; then
+            shift 2
+            export CODEX_HOME="$DIR"
+            exec codex exec "$@"
+        fi
 
-        shift 2
+        # $2 isn't a known profile (e.g. it's a flag like `--help`) - forward
+        # everything after `exec` straight to `codex exec`, using whichever
+        # profile currently has the most rate-limit headroom.
+        shift
 
-        export CODEX_HOME="$DIR"
+        if BEST_PROFILE="$(pick_best_profile)"; then
+            echo "Using profile: $BEST_PROFILE" >&2
+            export CODEX_HOME="$(profile_dir "$BEST_PROFILE")"
+        fi
 
         exec codex exec "$@"
         ;;
@@ -421,20 +428,28 @@ case "$1" in
         if [ "$PROFILE" = "$RESERVED_PROFILE" ]; then
             PROFILE="$(pick_best_profile)" || exit 1
             echo "Using profile: $PROFILE" >&2
+            shift
+            export CODEX_HOME="$(profile_dir "$PROFILE")"
+            exec codex "$@"
         fi
 
         DIR="$(profile_dir "$PROFILE")"
 
-        [ -d "$DIR" ] || {
-            echo "Profile '$PROFILE' does not exist."
-            echo
-            echo "Create it first:"
-            echo "  rcodex login $PROFILE"
-            exit 1
-        }
+        if [ -d "$DIR" ]; then
+            shift
+            export CODEX_HOME="$DIR"
+            exec codex "$@"
+        fi
 
-        export CODEX_HOME="$DIR"
+        # $1 isn't a known profile (e.g. it's a flag like `--help` or a
+        # codex subcommand like `resume`) - forward everything straight to
+        # `codex`, using whichever profile currently has the most
+        # rate-limit headroom.
+        if BEST_PROFILE="$(pick_best_profile)"; then
+            echo "Using profile: $BEST_PROFILE" >&2
+            export CODEX_HOME="$(profile_dir "$BEST_PROFILE")"
+        fi
 
-        exec codex
+        exec codex "$@"
         ;;
 esac

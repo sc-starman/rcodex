@@ -123,6 +123,29 @@ rcodex status best
 
 ---
 
+### Pass-Through to Codex
+
+Anything that isn't a recognized rcodex subcommand or an existing profile
+name is forwarded as-is to `codex` (or `codex exec`), using whichever
+profile currently has the most rate-limit headroom. This means normal
+`codex` flags, prompts, and subcommands work transparently through `rcodex`:
+
+```bash
+rcodex --help          # -> codex --help (best profile)
+rcodex resume --last    # -> codex resume --last (best profile)
+rcodex "fix the bug"    # -> codex "fix the bug" (best profile)
+rcodex exec --help      # -> codex exec --help (best profile)
+```
+
+If a profile name is given, it's used directly and any remaining arguments
+are passed straight through:
+
+```bash
+rcodex personal "fix the bug"   # -> codex "fix the bug" (personal profile)
+```
+
+---
+
 ### Login
 
 Create or login to a profile.
