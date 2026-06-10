@@ -16,6 +16,9 @@ Usage:
   rcodex <profile>
       Launch codex using profile
 
+  rcodex exec <profile> [args...]
+      Run 'codex exec' using profile
+
   rcodex list
       List profiles
 
@@ -52,6 +55,27 @@ case "$1" in
 
         echo "Logging into profile: $PROFILE"
         CODEX_HOME="$DIR" codex login
+        ;;
+
+    exec)
+        [ $# -ge 2 ] || usage
+
+        PROFILE="$2"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile '$PROFILE' does not exist."
+            echo
+            echo "Create it first:"
+            echo "  rcodex login $PROFILE"
+            exit 1
+        }
+
+        shift 2
+
+        export CODEX_HOME="$DIR"
+
+        exec codex exec "$@"
         ;;
 
     list)
