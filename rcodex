@@ -39,6 +39,12 @@ Usage:
   rcodex status <profile>
       Show profile information
 
+  rcodex disable <profile>
+      Disable a profile so it is skipped by routing and launches
+
+  rcodex enable <profile>
+      Re-enable a previously disabled profile
+
   rcodex remove <profile>
       Delete profile
 
@@ -51,6 +57,18 @@ EOF
 
 profile_dir() {
     echo "$BASE_DIR/$1"
+}
+
+disabled_flag_file() {
+    echo "$(profile_dir "$1")/.disabled"
+}
+
+is_profile_enabled() {
+    local dir profile="$1"
+
+    dir="$(profile_dir "$profile")"
+    [ -d "$dir" ] || return 1
+    [ ! -f "$(disabled_flag_file "$profile")" ]
 }
 
 check_not_reserved() {
@@ -201,12 +219,16 @@ pick_best_profile() {
     for dir in "$BASE_DIR"/*; do
         [ -d "$dir" ] || continue
         [ -f "$dir/auth.json" ] || continue
-        profiles+=("$(basename "$dir")")
+
+        p="$(basename "$dir")"
+        if is_profile_enabled "$p"; then
+            profiles+=("$p")
+        fi
     done
 
     if [ ${#profiles[@]} -eq 0 ]; then
-        echo "No logged-in profiles found." >&2
-        echo "Create one with: rcodex login <profile>" >&2
+        echo "No enabled, logged-in profiles found." >&2
+        echo "Create one with: rcodex login <profile> or enable one with: rcodex enable <profile>" >&2
         return 1
     fi
 
@@ -303,9 +325,42 @@ case "$1" in
         DIR="$(profile_dir "$PROFILE")"
 
         mkdir -p "$DIR"
+        rm -f "$(disabled_flag_file "$PROFILE")"
 
         echo "Logging into profile: $PROFILE"
         CODEX_HOME="$DIR" codex login
+        ;;
+
+    disable)
+        [ $# -eq 2 ] || usage
+
+        PROFILE="$2"
+        check_not_reserved "$PROFILE"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile not found."
+            exit 1
+        }
+
+        touch "$(disabled_flag_file "$PROFILE")"
+        echo "Disabled profile: $PROFILE"
+        ;;
+
+    enable)
+        [ $# -eq 2 ] || usage
+
+        PROFILE="$2"
+        check_not_reserved "$PROFILE"
+        DIR="$(profile_dir "$PROFILE")"
+
+        [ -d "$DIR" ] || {
+            echo "Profile not found."
+            exit 1
+        }
+
+        rm -f "$(disabled_flag_file "$PROFILE")"
+        echo "Enabled profile: $PROFILE"
         ;;
 
     exec)
@@ -325,6 +380,11 @@ case "$1" in
         DIR="$(profile_dir "$PROFILE")"
 
         if [ -d "$DIR" ]; then
+            if ! is_profile_enabled "$PROFILE"; then
+                echo "Profile '$PROFILE' is disabled. Enable it with: rcodex enable $PROFILE" >&2
+                exit 1
+            fi
+
             shift 2
             track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$DIR"
@@ -359,7 +419,11 @@ case "$1" in
             PROFILE="$(basename "$dir")"
 
             if [ -f "$dir/auth.json" ]; then
-                echo "  ✓ $PROFILE"
+                if is_profile_enabled "$PROFILE"; then
+                    echo "  ✓ $PROFILE"
+                else
+                    echo "  ○ $PROFILE (disabled)"
+                fi
             else
                 echo "  ? $PROFILE (not logged in)"
             fi
@@ -425,6 +489,12 @@ case "$1" in
             echo "Login   : Yes"
         else
             echo "Login   : No"
+        fi
+
+        if is_profile_enabled "$PROFILE"; then
+            echo "Enabled : Yes"
+        else
+            echo "Enabled : No"
         fi
 
         echo
@@ -496,6 +566,11 @@ case "$1" in
         DIR="$(profile_dir "$PROFILE")"
 
         if [ -d "$DIR" ]; then
+            if ! is_profile_enabled "$PROFILE"; then
+                echo "Profile '$PROFILE' is disabled. Enable it with: rcodex enable $PROFILE" >&2
+                exit 1
+            fi
+
             shift
             track_profile_and_carry_over "$PROFILE"
             export CODEX_HOME="$DIR"

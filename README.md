@@ -235,6 +235,15 @@ This is the same data `rcodex` / `rcodex best` use to pick a profile.
 rcodex list
 ```
 
+### Disable or Re-enable a Profile
+
+```bash
+rcodex disable work
+rcodex enable work
+```
+
+Disabled profiles are skipped by automatic routing and direct launches until they are re-enabled.
+
 Example output:
 
 ```text
