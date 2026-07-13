@@ -79,7 +79,11 @@ check_not_reserved() {
 }
 
 # Reads ~/.rcodex/<profile>/.rate_limit_cache into:
-#   fetched_at, primary_used, primary_resets_at, secondary_used, secondary_resets_at
+#   fetched_at, primary_used, primary_resets_at, primary_duration_mins,
+#   secondary_used, secondary_resets_at, secondary_duration_mins
+# Codex accounts currently report a single active window ("primary" - weekly
+# for paid plans, monthly for free), so secondary_* are commonly empty; both
+# windows are treated as optional here in case that changes again.
 # Returns 1 if the file is missing or doesn't contain usable data.
 load_rate_limit_cache_any() {
     local dir="$1"
@@ -87,15 +91,16 @@ load_rate_limit_cache_any() {
 
     [ -f "$file" ] || return 1
 
-    fetched_at= primary_used= primary_resets_at= secondary_used= secondary_resets_at=
+    fetched_at= primary_used= primary_resets_at= primary_duration_mins=
+    secondary_used= secondary_resets_at= secondary_duration_mins=
     # shellcheck source=/dev/null
     source "$file"
 
-    [ -n "${primary_used:-}" ] && [ -n "${secondary_used:-}" ]
+    [ -n "${primary_used:-}" ]
 }
 
 # Like load_rate_limit_cache_any, but only succeeds if the cache is still
-# within RATE_LIMIT_CACHE_TTL and the primary (5h) window hasn't reset yet.
+# within RATE_LIMIT_CACHE_TTL and the primary window hasn't reset yet.
 load_rate_limit_cache() {
     local dir="$1"
 
@@ -149,30 +154,55 @@ fetch_rate_limits() {
     esac
 
     # The snapshot appears twice (once under `rateLimits`, once under
-    # `rateLimitsByLimitId`), so only take the first match of each.
-    local p_used p_resets s_used s_resets
+    # `rateLimitsByLimitId`), so only take the first match of each. Codex
+    # accounts now report a single active window ("primary" - weekly for
+    # paid plans, monthly for free) and "secondary" is typically null, so
+    # only the primary window is required here.
+    local p_used p_resets p_dur s_used s_resets s_dur
     p_used="$(grep -oP '"primary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
     p_resets="$(grep -oP '"primary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    p_dur="$(grep -oP '"primary":\{"usedPercent":[0-9]+,"windowDurationMins":\K[0-9]+' <<<"$response" | head -n1 || true)"
     s_used="$(grep -oP '"secondary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
     s_resets="$(grep -oP '"secondary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    s_dur="$(grep -oP '"secondary":\{"usedPercent":[0-9]+,"windowDurationMins":\K[0-9]+' <<<"$response" | head -n1 || true)"
 
-    [ -n "$p_used" ] && [ -n "$s_used" ] || return 1
+    [ -n "$p_used" ] || return 1
 
     fetched_at="$(date +%s)"
     primary_used="$p_used"
     primary_resets_at="${p_resets:-0}"
+    primary_duration_mins="${p_dur:-0}"
     secondary_used="$s_used"
     secondary_resets_at="${s_resets:-0}"
+    secondary_duration_mins="${s_dur:-0}"
 
     {
         echo "fetched_at=$fetched_at"
         echo "primary_used=$primary_used"
         echo "primary_resets_at=$primary_resets_at"
+        echo "primary_duration_mins=$primary_duration_mins"
         echo "secondary_used=$secondary_used"
         echo "secondary_resets_at=$secondary_resets_at"
+        echo "secondary_duration_mins=$secondary_duration_mins"
     } > "$dir/.rate_limit_cache"
 
     return 0
+}
+
+# Converts a windowDurationMins value into a short human label (e.g. "7d",
+# "5h", "30d"). Echoes "?" if the duration is unknown.
+window_label() {
+    local mins="$1"
+
+    if [ -z "$mins" ] || [ "$mins" -le 0 ] 2>/dev/null; then
+        echo "?"
+    elif (( mins % 1440 == 0 )); then
+        echo "$((mins / 1440))d"
+    elif (( mins % 60 == 0 )); then
+        echo "$((mins / 60))h"
+    else
+        echo "${mins}m"
+    fi
 }
 
 # Sets primary_used/secondary_used/etc, preferring a fresh cache, falling
@@ -192,21 +222,24 @@ get_rate_limits() {
     load_rate_limit_cache_any "$dir"
 }
 
-# Echoes a 0-100 "remaining" score: the smaller of the 5h and weekly
-# remaining percentages (i.e. whichever window is more constraining).
+# Echoes a 0-100 "remaining" score: the primary window's remaining
+# percentage, or the smaller of primary and secondary if a secondary window
+# is also reported (i.e. whichever window is more constraining).
 rate_limit_score() {
     local dir="$1" force="${2:-}"
 
     get_rate_limits "$dir" "$force" || return 1
 
-    local rem_primary=$((100 - primary_used))
-    local rem_secondary=$((100 - secondary_used))
+    local rem=$((100 - primary_used))
 
-    if [ "$rem_primary" -lt "$rem_secondary" ]; then
-        echo "$rem_primary"
-    else
-        echo "$rem_secondary"
+    if [ -n "${secondary_used:-}" ]; then
+        local rem_secondary=$((100 - secondary_used))
+        if [ "$rem_secondary" -lt "$rem" ]; then
+            rem="$rem_secondary"
+        fi
     fi
+
+    echo "$rem"
 }
 
 # Echoes the name of the logged-in profile with the most rate-limit
@@ -440,7 +473,7 @@ case "$1" in
 
         FOUND=0
 
-        printf "%-15s %10s %10s %10s %10s\n" "PROFILE" "5H USED" "5H LEFT" "WEEK USED" "WEEK LEFT"
+        printf "%-15s %8s %8s %8s\n" "PROFILE" "WINDOW" "USED" "LEFT"
 
         for dir in "$BASE_DIR"/*; do
             [ -d "$dir" ] || continue
@@ -454,10 +487,15 @@ case "$1" in
             fi
 
             if get_rate_limits "$dir" "$FORCE"; then
-                printf "%-15s %9s%% %9s%% %9s%% %9s%%\n" \
-                    "$PROFILE" \
-                    "$primary_used" "$((100 - primary_used))" \
-                    "$secondary_used" "$((100 - secondary_used))"
+                printf "%-15s %8s %7s%% %7s%%" \
+                    "$PROFILE" "$(window_label "${primary_duration_mins:-0}")" \
+                    "$primary_used" "$((100 - primary_used))"
+                if [ -n "${secondary_used:-}" ]; then
+                    printf "  +%s: %s%% used / %s%% left" \
+                        "$(window_label "${secondary_duration_mins:-0}")" \
+                        "$secondary_used" "$((100 - secondary_used))"
+                fi
+                printf "\n"
             else
                 printf "%-15s %s\n" "$PROFILE" "(unable to read rate limits)"
             fi
