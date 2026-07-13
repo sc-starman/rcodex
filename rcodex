@@ -80,7 +80,7 @@ check_not_reserved() {
 
 # Reads ~/.rcodex/<profile>/.rate_limit_cache into:
 #   fetched_at, primary_used, primary_resets_at, primary_duration_mins,
-#   secondary_used, secondary_resets_at, secondary_duration_mins
+#   secondary_used, secondary_resets_at, secondary_duration_mins, plan_type
 # Codex accounts currently report a single active window ("primary" - weekly
 # for paid plans, monthly for free), so secondary_* are commonly empty; both
 # windows are treated as optional here in case that changes again.
@@ -92,7 +92,7 @@ load_rate_limit_cache_any() {
     [ -f "$file" ] || return 1
 
     fetched_at= primary_used= primary_resets_at= primary_duration_mins=
-    secondary_used= secondary_resets_at= secondary_duration_mins=
+    secondary_used= secondary_resets_at= secondary_duration_mins= plan_type=
     # shellcheck source=/dev/null
     source "$file"
 
@@ -158,13 +158,14 @@ fetch_rate_limits() {
     # accounts now report a single active window ("primary" - weekly for
     # paid plans, monthly for free) and "secondary" is typically null, so
     # only the primary window is required here.
-    local p_used p_resets p_dur s_used s_resets s_dur
+    local p_used p_resets p_dur s_used s_resets s_dur plan
     p_used="$(grep -oP '"primary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
     p_resets="$(grep -oP '"primary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
     p_dur="$(grep -oP '"primary":\{"usedPercent":[0-9]+,"windowDurationMins":\K[0-9]+' <<<"$response" | head -n1 || true)"
     s_used="$(grep -oP '"secondary":\{"usedPercent":\K[0-9]+' <<<"$response" | head -n1 || true)"
     s_resets="$(grep -oP '"secondary":\{"usedPercent":[0-9]+,"windowDurationMins":(?:[0-9]+|null),"resetsAt":\K[0-9]+' <<<"$response" | head -n1 || true)"
     s_dur="$(grep -oP '"secondary":\{"usedPercent":[0-9]+,"windowDurationMins":\K[0-9]+' <<<"$response" | head -n1 || true)"
+    plan="$(grep -oP '"planType":"\K[a-zA-Z_]+' <<<"$response" | head -n1 || true)"
 
     [ -n "$p_used" ] || return 1
 
@@ -175,6 +176,7 @@ fetch_rate_limits() {
     secondary_used="$s_used"
     secondary_resets_at="${s_resets:-0}"
     secondary_duration_mins="${s_dur:-0}"
+    plan_type="${plan:-unknown}"
 
     {
         echo "fetched_at=$fetched_at"
@@ -184,6 +186,7 @@ fetch_rate_limits() {
         echo "secondary_used=$secondary_used"
         echo "secondary_resets_at=$secondary_resets_at"
         echo "secondary_duration_mins=$secondary_duration_mins"
+        echo "plan_type=$plan_type"
     } > "$dir/.rate_limit_cache"
 
     return 0
@@ -452,10 +455,15 @@ case "$1" in
             PROFILE="$(basename "$dir")"
 
             if [ -f "$dir/auth.json" ]; then
+                PLAN="?"
+                if get_rate_limits "$dir"; then
+                    PLAN="${plan_type:-?}"
+                fi
+
                 if is_profile_enabled "$PROFILE"; then
-                    echo "  ✓ $PROFILE"
+                    echo "  ✓ $PROFILE (plan: $PLAN)"
                 else
-                    echo "  ○ $PROFILE (disabled)"
+                    echo "  ○ $PROFILE (plan: $PLAN, disabled)"
                 fi
             else
                 echo "  ? $PROFILE (not logged in)"
@@ -473,7 +481,7 @@ case "$1" in
 
         FOUND=0
 
-        printf "%-15s %8s %8s %8s\n" "PROFILE" "WINDOW" "USED" "LEFT"
+        printf "%-15s %-10s %8s %8s %8s\n" "PROFILE" "PLAN" "WINDOW" "USED" "LEFT"
 
         for dir in "$BASE_DIR"/*; do
             [ -d "$dir" ] || continue
@@ -487,8 +495,8 @@ case "$1" in
             fi
 
             if get_rate_limits "$dir" "$FORCE"; then
-                printf "%-15s %8s %7s%% %7s%%" \
-                    "$PROFILE" "$(window_label "${primary_duration_mins:-0}")" \
+                printf "%-15s %-10s %8s %7s%% %7s%%" \
+                    "$PROFILE" "${plan_type:-?}" "$(window_label "${primary_duration_mins:-0}")" \
                     "$primary_used" "$((100 - primary_used))"
                 if [ -n "${secondary_used:-}" ]; then
                     printf "  +%s: %s%% used / %s%% left" \
