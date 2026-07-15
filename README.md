@@ -528,29 +528,3 @@ most rate-limit headroom right now.
 MIT License.
 
 Feel free to use, modify, and distribute.
-
----
-
-## Repository Description
-
-Lightweight multi-profile manager and smart router for OpenAI Codex CLI. Run multiple Codex accounts and isolated environments from a single machine, and auto-route to whichever account has the most rate-limit headroom.
-
----
-
-## Suggested GitHub Topics
-
-```text
-codex
-openai
-codex-cli
-cli
-bash
-developer-tools
-productivity
-mcp
-openai-codex
-terminal
-linux
-rate-limiting
-router
-```
